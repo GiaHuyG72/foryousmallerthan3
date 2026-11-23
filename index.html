@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>ASCII Lilies - High Detail</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    // Canvas ẩn để dựng hình khối 3D và ánh sáng trước khi chuyển sang ký tự ASCII
+    const offCanvas = document.createElement('canvas');
+    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+    // Thang ký tự 12 mức độ sáng giúp chuyển sắc cánh hoa mịn và sắc nét
+    const ASCII_RAMP = ' .\'`:-=+*#%@';
+    const CHAR_LUT = new Array(256);
+    for (let i = 0; i < 256; i++) {
+      const idx = Math.min(ASCII_RAMP.length - 1, Math.floor((i / 256) * ASCII_RAMP.length));
+      CHAR_LUT[i] = ASCII_RAMP[idx];
+    }
+
+    let width = 0;
+    let height = 0;
+    let startTime = performance.now();
+    let pointerWind = 0;
+    let targetPointerWind = 0;
+    let isPointerDown = false;
+    let lastPointerX = 0;
+
+    function resize() {
+      width = canvas.width = window.innerWidth || 390;
+      height = canvas.height = window.innerHeight || 844;
+      offCanvas.width = width;
+      offCanvas.height = height;
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Tương tác: Vuốt ngang để thổi gió làm nghiêng bó hoa, chạm nhẹ để chạy lại hiệu ứng nở hoa
+    canvas.addEventListener('pointerdown', (e) => {
+      isPointerDown = true;
+      lastPointerX = e.clientX;
+      startTime = performance.now();
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!isPointerDown) return;
+      const dx = e.clientX - lastPointerX;
+      lastPointerX = e.clientX;
+      targetPointerWind = Math.max(-1.6, Math.min(1.6, targetPointerWind + dx * 0.012));
+    });
+
+    window.addEventListener('pointerup', () => {
+      isPointerDown = false;
+    });
+
+    function clamp01(v) {
+      return v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+
+    function smoothstep(e0, e1, x) {
+      const t = clamp01((x - e0) / (e1 - e0));
+      return t * t * (3 - 2 * t);
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function lerpRGB(c1, c2, t) {
+      const r = Math.round(lerp(c1[0], c2[0], t));
+      const g = Math.round(lerp(c1[1], c2[1], t));
+      const b = Math.round(lerp(c1[2], c2[2], t));
+      return `rgb(${r},${g},${b})`;
+    }
+
+    function evalQuadBezier(p0, p1, p2, t) {
+      const mt = 1 - t;
+      return {
+        x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+        y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+      };
+    }
+
+    // =========================================================================
+    // 1. DỮ LIỆU CẤU TRÚC BÓ HOA (SẮP XẾP THEO CHIỀU SÂU TỪ SAU RA TRƯỚC)
+    // =========================================================================
+
+    // 7 bông hoa ly hồng chính + 1 nụ nghiêng đặc trưng ở góc trên bên trái
+    const lilyNodes = [
+      // Lớp sau (tối hơn một chút để tạo chiều sâu khối)
+      { z: 0, dx: -0.11, dy: -0.35, bend: -0.06, scale: 0.90, rot: -0.22, tilt: 0.80, growStart: 0.15, growEnd: 1.75, bloomStart: 4.10, bloomEnd: 5.45, maxOpen: 0.96, shade: 0.86, phase: 2.7 },
+      { z: 0, dx:  0.08, dy: -0.33, bend:  0.05, scale: 0.88, rot:  0.25, tilt: 0.82, growStart: 0.18, growEnd: 1.78, bloomStart: 4.35, bloomEnd: 5.65, maxOpen: 0.95, shade: 0.88, phase: 3.4 },
+      { z: 1, dx:  0.23, dy: -0.24, bend:  0.14, scale: 0.94, rot:  0.52, tilt: 0.84, growStart: 0.14, growEnd: 1.70, bloomStart: 4.55, bloomEnd: 5.85, maxOpen: 1.00, shade: 0.94, phase: 4.1 },
+      // Nụ hoa ly lớn hướng nghiêng sang trái ở tầng trên
+      { z: 1, dx: -0.27, dy: -0.25, bend: -0.16, scale: 0.98, rot: -0.92, tilt: 0.85, growStart: 0.20, growEnd: 1.80, bloomStart: 4.00, bloomEnd: 5.30, maxOpen: 0.18, shade: 0.95, phase: 1.5 },
+      // Lớp giữa & lớp trước (sáng rõ, chi tiết cánh và nhụy nổi bật)
+      { z: 2, dx:  0.04, dy: -0.19, bend:  0.02, scale: 0.96, rot:  0.10, tilt: 0.88, growStart: 0.05, growEnd: 1.50, bloomStart: 3.00, bloomEnd: 4.30, maxOpen: 1.00, shade: 1.00, phase: 0.2 },
+      { z: 2, dx: -0.19, dy: -0.18, bend: -0.11, scale: 1.02, rot: -0.44, tilt: 0.86, growStart: 0.10, growEnd: 1.60, bloomStart: 3.45, bloomEnd: 4.75, maxOpen: 1.00, shade: 1.00, phase: 1.1 },
+      { z: 3, dx:  0.16, dy: -0.10, bend:  0.09, scale: 1.14, rot:  0.30, tilt: 0.92, growStart: 0.02, growEnd: 1.45, bloomStart: 3.75, bloomEnd: 5.10, maxOpen: 1.00, shade: 1.04, phase: 2.0 },
+      { z: 3, dx: -0.05, dy: -0.06, bend: -0.03, scale: 0.92, rot: -0.15, tilt: 0.88, growStart: 0.08, growEnd: 1.55, bloomStart: 4.25, bloomEnd: 5.55, maxOpen: 0.92, shade: 1.02, phase: 4.8 }
+    ];
+
+    // Các cụm hoa trắng nhỏ (baby trắng) tạo độ bồng bềnh xen kẽ
+    const fillerNodes = [
+      { dx: -0.26, dy: -0.09, bend: -0.15, r: 0.072, growStart: 0.10, growEnd: 1.45, bloomStart: 2.35, bloomEnd: 3.40, phase: 0.3 },
+      { dx: -0.06, dy: -0.27, bend: -0.03, r: 0.066, growStart: 0.16, growEnd: 1.62, bloomStart: 2.55, bloomEnd: 3.60, phase: 1.2 },
+      { dx:  0.14, dy: -0.29, bend:  0.08, r: 0.064, growStart: 0.18, growEnd: 1.68, bloomStart: 2.75, bloomEnd: 3.75, phase: 2.1 },
+      { dx: -0.12, dy: -0.12, bend: -0.07, r: 0.062, growStart: 0.08, growEnd: 1.40, bloomStart: 2.45, bloomEnd: 3.45, phase: 2.9 },
+      { dx:  0.26, dy: -0.16, bend:  0.15, r: 0.066, growStart: 0.14, growEnd: 1.58, bloomStart: 2.85, bloomEnd: 3.85, phase: 3.7 },
+      { dx:  0.04, dy: -0.01, bend:  0.02, r: 0.058, growStart: 0.06, growEnd: 1.35, bloomStart: 2.65, bloomEnd: 3.65, phase: 4.4 }
+    ];
+
+    // Các nhánh cành phụ mảnh tạo tán lá rậm rạp như bó hoa thật
+    const twigNodes = [
+      { dx: -0.30, dy: -0.15, bend: -0.18, growStart: 0.12, growEnd: 1.55 },
+      { dx:  0.30, dy: -0.14, bend:  0.18, growStart: 0.14, growEnd: 1.58 },
+      { dx: -0.21, dy: -0.31, bend: -0.12, growStart: 0.22, growEnd: 1.78 },
+      { dx:  0.19, dy: -0.32, bend:  0.11, growStart: 0.24, growEnd: 1.80 },
+      { dx: -0.18, dy:  0.02, bend: -0.10, growStart: 0.05, growEnd: 1.25 },
+      { dx:  0.18, dy:  0.01, bend:  0.10, growStart: 0.06, growEnd: 1.28 }
+    ];
+
+    // Hệ thống lá nhọn nhiều tầng sắc độ từ xanh rêu đậm đến xanh non bắt sáng
+    const foliageLeaves = [
+      // Lá tầng thấp ôm bó cành (tối hơn tạo nền)
+      { stemIdx: 4,  t: 0.24, ang: -0.62, len: 0.23, wid: 0.050, base: '#143b18', tip: '#27662c' },
+      { stemIdx: 6,  t: 0.25, ang:  0.64, len: 0.23, wid: 0.050, base: '#163f1a', tip: '#2b6e30' },
+      { stemIdx: 4,  t: 0.38, ang: -0.95, len: 0.27, wid: 0.056, base: '#1a4a1f', tip: '#347d39' },
+      { stemIdx: 6,  t: 0.37, ang:  0.94, len: 0.27, wid: 0.056, base: '#1c4f22', tip: '#38853d' },
+      // Lá tầng giữa tỏa rộng
+      { stemIdx: 5,  t: 0.42, ang: -1.12, len: 0.30, wid: 0.058, base: '#215926', tip: '#499e48' },
+      { stemIdx: 2,  t: 0.44, ang:  1.10, len: 0.30, wid: 0.058, base: '#235e28', tip: '#4ca34b' },
+      { stemIdx: 3,  t: 0.48, ang: -0.78, len: 0.26, wid: 0.052, base: '#26662c', tip: '#56b04f' },
+      { stemIdx: 1,  t: 0.50, ang:  0.76, len: 0.26, wid: 0.052, base: '#286b2e', tip: '#5bb553' },
+      // Lá non gần ngọn bắt sáng
+      { stemIdx: 0,  t: 0.62, ang: -0.58, len: 0.23, wid: 0.046, base: '#2f7835', tip: '#73c75a' },
+      { stemIdx: 1,  t: 0.64, ang:  0.56, len: 0.23, wid: 0.046, base: '#327d38', tip: '#7acc5e' },
+      { stemIdx: 5,  t: 0.68, ang: -0.72, len: 0.24, wid: 0.048, base: '#2d7332', tip: '#6bc255' },
+      { stemIdx: 2,  t: 0.68, ang:  0.70, len: 0.24, wid: 0.048, base: '#2f7835', tip: '#70c759' },
+      { stemIdx: 14, t: 0.55, ang: -1.22, len: 0.22, wid: 0.044, base: '#246129', tip: '#59b350' },
+      { stemIdx: 15, t: 0.55, ang:  1.20, len: 0.22, wid: 0.044, base: '#26662b', tip: '#5eb854' },
+      { stemIdx: 18, t: 0.60, ang: -0.88, len: 0.20, wid: 0.042, base: '#1f5424', tip: '#4aa147' },
+      { stemIdx: 19, t: 0.60, ang:  0.86, len: 0.20, wid: 0.042, base: '#215926', tip: '#4fa64b' }
+    ];
+
+    // Các hạt phấn hoa phát sáng bay nhẹ xung quanh
+    const pollenParticles = Array.from({ length: 26 }, (_, i) => ({
+      seed: i * 1.73,
+      rx: ((i * 37) % 100) / 100 - 0.5,
+      ry: ((i * 53) % 100) / 100 - 0.5,
+      speed: 0.35 + (i % 5) * 0.12,
+      size: 1.5 + (i % 3) * 0.8,
+      isPink: i % 3 === 0
+    }));
+
+    // =========================================================================
+    // 2. CÁC HÀM VẼ CHI TIẾT THỰC VẬT
+    // =========================================================================
+
+    // Vẽ lá hoa ly có chuyển sắc từ gốc đến ngọn và đường gân giữa bắt sáng
+    function drawDetailedLeaf(c, x, y, angle, length, widthLeaf, baseCol, tipCol, scale) {
+      if (scale <= 0.01) return;
+      c.save();
+      c.translate(x, y);
+      c.rotate(angle);
+      c.scale(scale, scale);
+
+      const grad = c.createLinearGradient(0, 0, 0, -length);
+      grad.addColorStop(0.0, baseCol);
+      grad.addColorStop(0.7, tipCol);
+      grad.addColorStop(1.0, '#9be06c');
+
+      c.fillStyle = grad;
+      c.beginPath();
+      c.moveTo(0, 0);
+      c.bezierCurveTo(widthLeaf * 1.15, -length * 0.35, widthLeaf * 0.75, -length * 0.78, 0, -length);
+      c.bezierCurveTo(-widthLeaf * 0.75, -length * 0.78, -widthLeaf * 1.15, -length * 0.35, 0, 0);
+      c.fill();
+
+      // Đường gân giữa lá tạo khối 3D
+      c.strokeStyle = 'rgba(175, 235, 120, 0.38)';
+      c.lineWidth = Math.max(1.2, widthLeaf * 0.12);
+      c.beginPath();
+      c.moveTo(0, -length * 0.06);
+      c.lineTo(0, -length * 0.85);
+      c.stroke();
+
+      c.restore();
+    }
+
+    // Vẽ bông hoa ly 6 cánh viền trắng, họng đỏ thẫm, chấm đốm và 6 nhụy cong 3D
+    function drawDetailedLily(c, x, y, size, rotation, tilt, budScale, openProgress, shade, elapsed, phase) {
+      if (budScale <= 0.02) return;
+
+      c.save();
+      c.translate(x, y);
+      c.rotate(rotation);
+      c.scale(budScale, budScale * lerp(1, tilt, openProgress));
+
+      const petalLen = size * lerp(0.74, 1.08, openProgress);
+      const petalWid = size * lerp(0.15, 0.38, openProgress);
+
+      // Chuyển màu từ nụ xanh vàng sang hồng phấn đậm đà khi nở
+      const throatCol = lerpRGB([98, 130, 34],  [105, 14, 48],  openProgress);
+      const deepPink  = lerpRGB([152, 178, 56], [214, 68, 118], openProgress);
+      const softPink  = lerpRGB([198, 210, 96], [248, 152, 186], openProgress);
+      const rimWhite  = lerpRGB([224, 218, 165],[255, 246, 250], openProgress);
+
+      // Vẽ 3 cánh lớp sau trước, 3 cánh lớp trước sau để cánh xếp chồng tự nhiên
+      const petalOrder = [0, 2, 4, 1, 3, 5];
+
+      for (let idx = 0; idx < 6; idx++) {
+        const i = petalOrder[idx];
+        const isInner = idx >= 3; // 3 cánh trong rộng và sáng hơn 3 cánh ngoài
+        const wFactor = isInner ? 1.08 : 0.92;
+        const lFactor = isInner ? 1.02 : 0.96;
+
+        const closedAngle = (i - 2.5) * 0.055;
+        const baseOpenAngle = (i * Math.PI) / 3 + Math.sin(elapsed * 1.5 + phase + i) * 0.03;
+        const angle = lerp(closedAngle, baseOpenAngle, openProgress);
+
+        // Hiệu ứng phối cảnh 3D: cánh hướng lên/ra trước sáng hơn cánh hướng xuống
+        const facingLight = 0.88 + 0.14 * Math.cos(angle - 0.3);
+        const pLen = petalLen * lFactor;
+        const pWid = petalWid * wFactor;
+
+        c.save();
+        c.rotate(angle);
+
+        const grad = c.createLinearGradient(0, 0, 0, -pLen);
+        grad.addColorStop(0.00, throatCol);
+        grad.addColorStop(0.24, deepPink);
+        grad.addColorStop(0.68, softPink);
+        grad.addColorStop(0.92, rimWhite);
+        grad.addColorStop(1.00, '#ffffff');
+
+        // Đường viền cánh hoa hơi lượn sóng tự nhiên đặc trưng của hoa ly
+        c.fillStyle = grad;
+        c.beginPath();
+        c.moveTo(0, 0);
+        c.bezierCurveTo(
+          pWid * 0.95, -pLen * 0.25,
+          pWid * 1.05, -pLen * 0.62,
+          pWid * 0.42, -pLen * 0.86
+        );
+        c.quadraticCurveTo(pWid * 0.14, -pLen * 0.96, 0, -pLen);
+        c.quadraticCurveTo(-pWid * 0.14, -pLen * 0.96, -pWid * 0.42, -pLen * 0.86);
+        c.bezierCurveTo(
+          -pWid * 1.05, -pLen * 0.62,
+          -pWid * 0.95, -pLen * 0.25,
+          0, 0
+        );
+        c.fill();
+
+        // Viền sáng ngoài mép cánh giúp tách bạch từng cánh trên lưới ký tự ASCII
+        if (openProgress > 0.2) {
+          c.strokeStyle = `rgba(255, 245, 250, ${0.65 * openProgress * facingLight})`;
+          c.lineWidth = Math.max(1.2, size * 0.022);
+          c.stroke();
+        }
+
+        // Gân nổi giữa cánh và các chấm đốm nâu đỏ ở lòng hoa
+        if (openProgress > 0.28) {
+          const detailAlpha = clamp01((openProgress - 0.28) / 0.72);
+
+          // Gân sáng chạy dọc sống cánh
+          c.strokeStyle = `rgba(255, 220, 235, ${0.50 * detailAlpha})`;
+          c.lineWidth = Math.max(1.4, size * 0.026);
+          c.beginPath();
+          c.moveTo(0, -size * 0.10);
+          c.lineTo(0, -pLen * 0.82);
+          c.stroke();
+
+          // Các đốm tàn nhang đặc trưng của hoa ly Stargazer
+          c.fillStyle = `rgba(92, 10, 38, ${0.88 * detailAlpha})`;
+          for (let d = 1; d <= 4; d++) {
+            const dist = pLen * (0.18 + d * 0.095);
+            const spread = pWid * (0.14 + (d % 2) * 0.08);
+            const dotR = size * 0.021;
+            c.beginPath();
+            c.arc(-spread, -dist, dotR, 0, Math.PI * 2);
+            c.arc(spread, -dist * 0.96, dotR, 0, Math.PI * 2);
+            if (d <= 2) {
+              c.arc(0, -dist * 1.04, dotR * 0.9, 0, Math.PI * 2);
+            }
+            c.fill();
+          }
+        }
+
+        c.restore();
+      }
+
+      // 6 nhụy hoa (5 nhị đực bao phấn nâu cam + 1 nhụy cái ở tâm)
+      if (openProgress > 0.35) {
+        const stScale = clamp01((openProgress - 0.35) / 0.65);
+        for (let s = 0; s < 6; s++) {
+          const sAngle = (s * Math.PI * 2) / 6 + 0.25 + Math.sin(elapsed * 2 + s) * 0.04;
+          const sLen = size * (s === 5 ? 0.42 : 0.36) * stScale;
+          const tipX = Math.cos(sAngle) * sLen;
+          const tipY = Math.sin(sAngle) * sLen;
+
+          c.strokeStyle = '#e4f2a7';
+          c.lineWidth = Math.max(1.4, size * 0.024);
+          c.beginPath();
+          c.moveTo(0, 0);
+          c.quadraticCurveTo(tipX * 0.5, tipY * 0.35 - sLen * 0.22, tipX, tipY);
+          c.stroke();
+
+          // Đầu bao phấn màu nâu cam / vàng nghệ
+          c.fillStyle = s === 5 ? '#96c954' : '#b84a14';
+          c.beginPath();
+          c.ellipse(tipX, tipY, size * 0.045 * stScale, size * 0.026 * stScale, sAngle, 0, Math.PI * 2);
+          c.fill();
+        }
+      }
+
+      // Phủ lớp điều chỉnh sáng tối theo tầng chiều sâu
+      if (shade < 0.98) {
+        c.fillStyle = `rgba(0, 0, 0, ${1 - shade})`;
+        c.beginPath();
+        c.arc(0, 0, size * 1.15, 0, Math.PI * 2);
+        c.fill();
+      }
+
+      c.restore();
+    }
+
+    // Vẽ cụm hoa baby trắng nhiều tầng bông xốp
+    function drawBabyBreathCluster(c, x, y, radius, bloom, elapsed) {
+      if (bloom <= 0.02) return;
+      const count = 13;
+      for (let i = 0; i < count; i++) {
+        const delay = (i / count) * 0.38;
+        const p = clamp01((bloom - delay) / (1 - delay));
+        if (p <= 0.01) continue;
+
+        const angle = (i / count) * Math.PI * 2 + (i % 3) * 0.5 + elapsed * 0.2;
+        const dist = (0.18 + ((i * 3) % 5) * 0.22) * radius * p;
+        const fx = x + Math.cos(angle) * dist;
+        const fy = y + Math.sin(angle) * dist;
+        const r = radius * (0.24 + (i % 2) * 0.07) * p;
+
+        // Đài hoa xanh nhạt phía dưới
+        c.fillStyle = '#5c8a58';
+        c.beginPath();
+        c.arc(fx, fy + r * 0.25, r * 0.85, 0, Math.PI * 2);
+        c.fill();
+
+        // Cánh hoa trắng tinh khôi
+        c.fillStyle = i % 3 === 0 ? '#ffffff' : '#edf5ed';
+        c.beginPath();
+        c.arc(fx, fy, r, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+
+    // =========================================================================
+    // 3. DỰNG TOÀN CẢNH BÓ HOA THEO THỜI GIAN
+    // =========================================================================
+
+    function renderScene(elapsed) {
+      offCtx.fillStyle = '#000000';
+      offCtx.fillRect(0, 0, width, height);
+
+      const bouquetSize = Math.min(width * 0.92, height * 0.72);
+      const cx = width * 0.50;
+      const cy = height * 0.50;
+
+      // Chuyển động đung đưa tự nhiên + phản hồi theo lực vuốt gió
+      const swayStrength = smoothstep(1.4, 4.5, elapsed);
+      const naturalSway = Math.sin(elapsed * 1.5) * 0.030 + Math.sin(elapsed * 2.7) * 0.008;
+      const sway = (naturalSway * swayStrength + pointerWind * 0.08) * bouquetSize;
+
+      const baseX = cx + sway * 0.10;
+      const baseY = cy + bouquetSize * 0.56;
+
+      // Hợp nhất toàn bộ cành (8 cành hoa ly + 6 cành hoa trắng + 6 nhánh lá phụ = 20 cành)
+      const allStems = [];
+
+      lilyNodes.forEach((node, idx) => {
+        const p0 = { x: baseX + (idx - 3.5) * bouquetSize * 0.007, y: baseY };
+        const p1 = {
+          x: cx + node.bend * bouquetSize * 0.65 + sway * 0.36,
+          y: cy + bouquetSize * 0.20
+        };
+        const p2 = {
+          x: cx + node.dx * bouquetSize + sway * (0.85 + Math.abs(node.dy) * 0.45),
+          y: cy + node.dy * bouquetSize + Math.sin(elapsed * 1.5 + node.phase) * 2
+        };
+        const grow = smoothstep(node.growStart, node.growEnd, elapsed);
+        allStems.push({
+          p0, p1, p2, grow,
+          color: node.z <= 1 ? '#235e28' : '#38873e',
+          widthFactor: 0.016,
+          type: 'lily',
+          node
+        });
+      });
+
+      fillerNodes.forEach((node, idx) => {
+        const p0 = { x: baseX + (idx - 2.5) * bouquetSize * 0.006, y: baseY };
+        const p1 = {
+          x: cx + node.bend * bouquetSize * 0.65 + sway * 0.34,
+          y: cy + bouquetSize * 0.22
+        };
+        const p2 = {
+          x: cx + node.dx * bouquetSize + sway * 0.85,
+          y: cy + node.dy * bouquetSize
+        };
+        const grow = smoothstep(node.growStart, node.growEnd, elapsed);
+        allStems.push({
+          p0, p1, p2, grow,
+          color: '#296e2f',
+          widthFactor: 0.013,
+          type: 'filler',
+          node
+        });
+      });
+
+      twigNodes.forEach((node, idx) => {
+        const p0 = { x: baseX + (idx - 2.5) * bouquetSize * 0.006, y: baseY };
+        const p1 = {
+          x: cx + node.bend * bouquetSize * 0.60 + sway * 0.30,
+          y: cy + bouquetSize * 0.24
+        };
+        const p2 = {
+          x: cx + node.dx * bouquetSize + sway * 0.75,
+          y: cy + node.dy * bouquetSize
+        };
+        const grow = smoothstep(node.growStart, node.growEnd, elapsed);
+        allStems.push({
+          p0, p1, p2, grow,
+          color: '#1f5424',
+          widthFactor: 0.012,
+          type: 'twig',
+          node
+        });
+      });
+
+      // Bước 1: Vẽ bó cành xanh vươn lên
+      allStems.forEach((st) => {
+        if (st.grow <= 0.005) return;
+        const q0 = {
+          x: lerp(st.p0.x, st.p1.x, st.grow),
+          y: lerp(st.p0.y, st.p1.y, st.grow)
+        };
+        const tip = evalQuadBezier(st.p0, st.p1, st.p2, st.grow);
+
+        offCtx.strokeStyle = st.color;
+        offCtx.lineWidth = Math.max(2.5, bouquetSize * st.widthFactor);
+        offCtx.lineCap = 'round';
+        offCtx.beginPath();
+        offCtx.moveTo(st.p0.x, st.p0.y);
+        offCtx.quadraticCurveTo(q0.x, q0.y, tip.x, tip.y);
+        offCtx.stroke();
+      });
+
+      // Nút buộc gốc bó hoa màu xanh lá non
+      const tieGrow = smoothstep(0.1, 0.7, elapsed);
+      if (tieGrow > 0.01) {
+        const tiePos = { x: lerp(baseX, cx + sway * 0.22, 0.45), y: lerp(baseY, cy + bouquetSize * 0.22, 0.45) };
+        offCtx.strokeStyle = '#58ad4e';
+        offCtx.lineWidth = Math.max(3, bouquetSize * 0.018 * tieGrow);
+        offCtx.beginPath();
+        offCtx.moveTo(tiePos.x - bouquetSize * 0.032, tiePos.y - 2);
+        offCtx.lineTo(tiePos.x + bouquetSize * 0.032, tiePos.y + 2);
+        offCtx.stroke();
+      }
+
+      // Bước 2: Vẽ tán lá nhọn mọc dần theo độ cao của từng cành
+      foliageLeaves.forEach((lf, idx) => {
+        const st = allStems[lf.stemIdx];
+        if (!st || st.grow < lf.t * 0.82) return;
+
+        const leafGrow = clamp01((st.grow - lf.t * 0.82) / (1 - lf.t * 0.72));
+        const pos = evalQuadBezier(st.p0, st.p1, st.p2, lf.t);
+        const leafAngle = lf.ang + Math.sin(elapsed * 1.8 + idx) * 0.045 * swayStrength + pointerWind * 0.08;
+
+        drawDetailedLeaf(
+          offCtx,
+          pos.x,
+          pos.y,
+          leafAngle,
+          lf.len * bouquetSize,
+          lf.wid * bouquetSize,
+          lf.base,
+          lf.tip,
+          smoothstep(0, 1, leafGrow)
+        );
+      });
+
+      // Bước 3: Vẽ các cụm hoa baby trắng nở bung xen kẽ
+      allStems.forEach((st) => {
+        if (st.type !== 'filler') return;
+        const tip = evalQuadBezier(st.p0, st.p1, st.p2, st.grow);
+        const bloom = smoothstep(st.node.bloomStart, st.node.bloomEnd, elapsed);
+        drawBabyBreathCluster(offCtx, tip.x, tip.y, st.node.r * bouquetSize, bloom, elapsed);
+      });
+
+      // Bước 4: Vẽ các bông hoa ly theo thứ tự chiều sâu (từ z = 0 đến z = 3)
+      allStems
+        .filter((st) => st.type === 'lily')
+        .sort((a, b) => a.node.z - b.node.z)
+        .forEach((st) => {
+          const n = st.node;
+          const tip = evalQuadBezier(st.p0, st.p1, st.p2, st.grow);
+          const budScale = smoothstep(n.growEnd - 0.55, n.growEnd + 0.35, elapsed);
+          const openProgress = smoothstep(n.bloomStart, n.bloomEnd, elapsed) * n.maxOpen;
+          const rot = n.rot + Math.sin(elapsed * 1.6 + n.phase) * 0.045 * swayStrength + pointerWind * 0.10;
+
+          drawDetailedLily(
+            offCtx,
+            tip.x,
+            tip.y,
+            bouquetSize * 0.155 * n.scale,
+            rot,
+            n.tilt,
+            budScale,
+            openProgress,
+            n.shade,
+            elapsed,
+            n.phase
+          );
+        });
+
+      // Bước 5: Vẽ các hạt phấn hoa lung linh bay lên khi hoa bắt đầu nở
+      const particleAlpha = smoothstep(3.2, 5.2, elapsed);
+      if (particleAlpha > 0.01) {
+        pollenParticles.forEach((pt) => {
+          const cycle = (elapsed * pt.speed + pt.seed) % 1;
+          const fade = Math.sin(cycle * Math.PI) * particleAlpha;
+          const px = cx + pt.rx * bouquetSize * 0.85 + Math.sin(elapsed * 1.4 + pt.seed) * 14 + sway * 0.7;
+          const py = cy + pt.ry * bouquetSize * 0.55 - cycle * bouquetSize * 0.28;
+
+          offCtx.fillStyle = pt.isPink
+            ? `rgba(255, 175, 205, ${fade})`
+            : `rgba(255, 245, 195, ${fade})`;
+          offCtx.beginPath();
+          offCtx.arc(px, py, pt.size, 0, Math.PI * 2);
+          offCtx.fill();
+        });
+      }
+    }
+
+    // =========================================================================
+    // 4. CHUYỂN ĐỔI SANG LƯỚI KÝ TỰ ASCII MẬT ĐỘ CAO
+    // =========================================================================
+
+    function renderAscii(now) {
+      const elapsed = (now - startTime) / 1000;
+
+      // Giảm dần lực gió vuốt về 0 mượt mà
+      if (!isPointerDown) {
+        targetPointerWind *= 0.92;
+      }
+      pointerWind = lerp(pointerWind, targetPointerWind, 0.12);
+
+      renderScene(elapsed);
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, width, height);
+
+      // Lưới ký tự siêu mịn (tự động tối ưu kích thước theo màn hình điện thoại / máy tính)
+      const cellSize = Math.max(4, Math.floor(Math.min(width, height) / 112));
+      const halfCell = cellSize * 0.5;
+      const imgData = offCtx.getImageData(0, 0, width, height).data;
+
+      ctx.font = `bold ${cellSize + 1}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      for (let y = 0; y < height; y += cellSize) {
+        const py = Math.min(height - 1, y + (cellSize >> 1));
+        const rowOffset = py * width;
+
+        for (let x = 0; x < width; x += cellSize) {
+          const px = Math.min(width - 1, x + (cellSize >> 1));
+          const idx = (rowOffset + px) << 2;
+
+          const r = imgData[idx];
+          const g = imgData[idx + 1];
+          const b = imgData[idx + 2];
+
+          // Bỏ qua vùng nền đen tuyệt đối để giữ tốc độ 60fps
+          if ((r | g | b) < 18) continue;
+
+          // Tính độ sáng cảm nhận (luminance) bằng phép toán số nguyên tốc độ cao
+          const lum = (r * 77 + g * 150 + b * 29) >> 8;
+          const ch = CHAR_LUT[lum];
+
+          if (ch !== ' ') {
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillText(ch, x + halfCell, y + halfCell);
+          }
+        }
+      }
+
+      requestAnimationFrame(renderAscii);
+    }
+
+    requestAnimationFrame(renderAscii);
+  </script>
+</body>
+</html>
